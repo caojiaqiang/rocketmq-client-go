@@ -144,14 +144,15 @@ func (p *defaultProducer) encodeBatch(msgs ...*primitive.Message) *primitive.Mes
 	batch.Queue = msgs[0].Queue
 	batch.Body = MarshalMessageBatch(msgs...)
 	batch.Batch = true
-	batch.List = msgs
 	return batch
 }
 
 func MarshalMessageBatch(msgs ...*primitive.Message) []byte {
 	buffer := bytes.NewBufferString("")
 	for _, msg := range msgs {
-		msg.WithProperty(primitive.PropertyUniqueClientMessageIdKeyIndex, primitive.CreateUniqID())
+		if msg.GetProperty(primitive.PropertyUniqueClientMessageIdKeyIndex) == "" {
+			msg.WithProperty(primitive.PropertyUniqueClientMessageIdKeyIndex, primitive.CreateUniqID())
+		}
 		data := msg.Marshal()
 		buffer.Write(data)
 	}
@@ -228,10 +229,10 @@ func (p *defaultProducer) Request(ctx context.Context, timeout time.Duration, ms
 		ctx = primitive.WithMethod(ctx, primitive.SendAsync)
 
 		return nil, p.interceptor(ctx, msg, nil, func(ctx context.Context, req, reply interface{}) error {
-			return p.sendAsync(ctx, msg, f)
+			return p.sendAsync(ctx, msg, f, msg)
 		})
 	}
-	if err := p.sendAsync(ctx, msg, f); err != nil {
+	if err := p.sendAsync(ctx, msg, f, msg); err != nil {
 		return nil, errors.Wrap(err, "sendAsync error")
 	}
 
@@ -268,10 +269,10 @@ func (p *defaultProducer) RequestAsync(ctx context.Context, timeout time.Duratio
 	if p.interceptor != nil {
 		ctx = primitive.WithMethod(ctx, primitive.SendAsync)
 		resErr = p.interceptor(ctx, msg, nil, func(ctx context.Context, req, reply interface{}) error {
-			return p.sendAsync(ctx, msg, f)
+			return p.sendAsync(ctx, msg, f, msg)
 		})
 	}
-	resErr = p.sendAsync(ctx, msg, f)
+	resErr = p.sendAsync(ctx, msg, f, msg)
 	if resErr != nil {
 		internal.RequestResponseFutureMap.RemoveRequestResponseFuture(correlationId)
 	}
@@ -303,17 +304,21 @@ func (p *defaultProducer) SendSync(ctx context.Context, msgs ...*primitive.Messa
 			var err error
 			realReq := req.(*primitive.Message)
 			realReply := reply.(*primitive.SendResult)
-			err = p.sendSync(ctx, realReq, realReply)
+			realMsgs := msgs
+			if !realReq.Batch {
+				realMsgs = []*primitive.Message{realReq}
+			}
+			err = p.sendSync(ctx, realReq, realReply, realMsgs...)
 			return err
 		})
 		return resp, err
 	}
 
-	err := p.sendSync(ctx, msg, resp)
+	err := p.sendSync(ctx, msg, resp, msgs...)
 	return resp, err
 }
 
-func (p *defaultProducer) sendSync(ctx context.Context, msg *primitive.Message, resp *primitive.SendResult) error {
+func (p *defaultProducer) sendSync(ctx context.Context, msg *primitive.Message, resp *primitive.SendResult, msgs ...*primitive.Message) error {
 
 	retryTime := 1 + p.options.RetryTimes
 
@@ -367,7 +372,7 @@ func (p *defaultProducer) sendSync(ctx context.Context, msg *primitive.Message, 
 		if needRetryCode(res.Code) && retryCount < retryTime-1 {
 			continue
 		}
-		return p.client.ProcessSendResponse(mq.BrokerName, res, resp, msg)
+		return p.client.ProcessSendResponse(mq.BrokerName, res, resp, msgs...)
 	}
 	return err
 }
@@ -385,13 +390,13 @@ func (p *defaultProducer) SendAsync(ctx context.Context, f func(context.Context,
 		ctx = primitive.WithMethod(ctx, primitive.SendAsync)
 
 		return p.interceptor(ctx, msg, nil, func(ctx context.Context, req, reply interface{}) error {
-			return p.sendAsync(ctx, msg, f)
+			return p.sendAsync(ctx, msg, f, msgs...)
 		})
 	}
-	return p.sendAsync(ctx, msg, f)
+	return p.sendAsync(ctx, msg, f, msgs...)
 }
 
-func (p *defaultProducer) sendAsync(ctx context.Context, msg *primitive.Message, h func(context.Context, *primitive.SendResult, error)) error {
+func (p *defaultProducer) sendAsync(ctx context.Context, msg *primitive.Message, h func(context.Context, *primitive.SendResult, error), msgs ...*primitive.Message) error {
 
 	mq := p.selectMessageQueue(msg, "")
 	if mq == nil {
@@ -412,7 +417,7 @@ func (p *defaultProducer) sendAsync(ctx context.Context, msg *primitive.Message,
 		}
 
 		resp := primitive.NewSendResult()
-		err = p.client.ProcessSendResponse(mq.BrokerName, command, resp, msg)
+		err = p.client.ProcessSendResponse(mq.BrokerName, command, resp, msgs...)
 		if err != nil {
 			h(ctx, nil, err)
 			return

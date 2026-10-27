@@ -741,12 +741,8 @@ func (c *rmqClient) ProcessSendResponse(brokerName string, cmd *remote.RemotingC
 	}
 
 	msgIDs := make([]string, 0)
-	if msgs[0].Batch {
-		for i := range msgs[0].List {
-			msgIDs = append(msgIDs, msgs[0].List[i].GetProperty(primitive.PropertyUniqueClientMessageIdKeyIndex))
-		}
-	} else {
-		msgIDs = append(msgIDs, msgs[0].GetProperty(primitive.PropertyUniqueClientMessageIdKeyIndex))
+	for _, msg := range msgs {
+		msgIDs = append(msgIDs, msg.GetProperty(primitive.PropertyUniqueClientMessageIdKeyIndex))
 	}
 	uniqueMsgId := strings.Join(msgIDs, ",")
 
